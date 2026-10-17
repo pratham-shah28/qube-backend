@@ -1,0 +1,9 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlmodel>=0.0.22
+alembic>=1.13
+pydantic-settings>=2.4
+email-validator>=2.2
+pyjwt>=2.9
+argon2-cffi>=23.1
+cryptography>=43
