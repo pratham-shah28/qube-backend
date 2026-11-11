@@ -12,8 +12,10 @@ from app.db import get_db
 from app.models import (
     EndReason,
     Invite,
+    LockPolicy,
     LockSession,
     Organization,
+    OrgKind,
     Tag,
     User,
     Verification,
@@ -26,6 +28,8 @@ from app.schemas import (
     EmergencyUnlockOut,
     InviteCreate,
     InviteOut,
+    PolicyOut,
+    PolicyUpdate,
     SessionPage,
     SummaryOut,
     TagCreate,
@@ -39,6 +43,7 @@ from app.schemas import (
     as_utc,
 )
 from app.security import new_invite_code, require_admin
+from app.services.policy import policy_out
 from app.services.sessions import end_session, expire_all_due
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -347,3 +352,30 @@ def summary(admin: User = Depends(require_admin), db: Session = Depends(get_db))
             for z in zones
         ],
     )
+
+
+# --- lock policy ---------------------------------------------------------------------------
+
+
+@router.get("/policy", response_model=PolicyOut)
+def get_policy(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    return policy_out(db, db.get(Organization, admin.org_id))
+
+
+@router.put("/policy", response_model=PolicyOut)
+def set_policy(
+    body: PolicyUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)
+):
+    """Which apps members' phones lock during focus. Organizations only: individuals choose
+    apps on their own device."""
+    org = db.get(Organization, admin.org_id)
+    if org.kind == OrgKind.personal:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="personal_account")
+    policy = db.get(LockPolicy, org.id) or LockPolicy(org_id=org.id, version=0)
+    policy.mode = body.mode
+    policy.apps = [a.model_dump() for a in body.apps]
+    policy.version += 1
+    policy.updated_at = utcnow()
+    db.add(policy)
+    db.commit()
+    return policy_out(db, org)

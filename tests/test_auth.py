@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from app.models import Invite, User, utcnow
-from tests.conftest import ADMIN_PASSWORD
+from tests.conftest import ADMIN_PASSWORD, join_body
 
 
 def _invite(world, **kw) -> str:
@@ -30,7 +30,7 @@ def test_admin_login_wrong_password(client, world):
 
 def test_join_with_invite(client, world):
     code = _invite(world)
-    r = client.post("/auth/join", json={"code": code.lower(), "name": "Ada"})
+    r = client.post("/auth/join", json=join_body(code.lower(), name="Ada"))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["user"]["role"] == "member"
@@ -41,22 +41,22 @@ def test_join_with_invite(client, world):
 
 def test_join_respects_max_uses(client, world):
     code = _invite(world, max_uses=1)
-    assert client.post("/auth/join", json={"code": code}).status_code == 200
-    assert client.post("/auth/join", json={"code": code}).json()["detail"] == "invalid_invite"
+    assert client.post("/auth/join", json=join_body(code)).status_code == 200
+    assert client.post("/auth/join", json=join_body(code)).json()["detail"] == "invalid_invite"
 
 
 def test_join_expired(client, world):
     code = _invite(world, expires_at=utcnow() - timedelta(minutes=1))
-    assert client.post("/auth/join", json={"code": code}).status_code == 400
+    assert client.post("/auth/join", json=join_body(code)).status_code == 400
 
 
 def test_join_revoked(client, world):
     code = _invite(world, revoked=True)
-    assert client.post("/auth/join", json={"code": code}).status_code == 400
+    assert client.post("/auth/join", json=join_body(code)).status_code == 400
 
 
 def test_join_unknown_code(client, world):
-    assert client.post("/auth/join", json={"code": "NOPE1234"}).status_code == 400
+    assert client.post("/auth/join", json=join_body("NOPE1234")).status_code == 400
 
 
 def test_missing_and_bad_tokens(client, world):
@@ -89,8 +89,8 @@ def test_member_cannot_use_admin_routes(client, world):
 def test_rate_limit(app, client, world):
     app.state.settings.auth_rate_limit_per_minute = 3
     for _ in range(3):
-        client.post("/auth/join", json={"code": "NOPE1234"})
-    assert client.post("/auth/join", json={"code": "NOPE1234"}).status_code == 429
+        client.post("/auth/join", json=join_body("NOPE1234"))
+    assert client.post("/auth/join", json=join_body("NOPE1234")).status_code == 429
 
 
 def test_device_belongs_to_owner(client, world):

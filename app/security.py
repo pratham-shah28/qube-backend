@@ -13,7 +13,7 @@ from sqlmodel import Session
 
 from app.config import Settings
 from app.db import get_db
-from app.models import Role, User
+from app.models import OrgKind, Role, User
 
 _hasher = PasswordHasher()
 _bearer = HTTPBearer(auto_error=False)
@@ -43,11 +43,14 @@ def new_invite_code(length: int = 10) -> str:
     return "".join(secrets.choice(INVITE_ALPHABET) for _ in range(length))
 
 
-def create_token(settings: Settings, user: User) -> str:
+def create_token(settings: Settings, user: User, org_kind: OrgKind | None = None) -> str:
+    """Organization admins get short-lived tokens. Everyone else, including individuals (who are
+    admins of their own personal org), gets a long-lived one so the app stays signed in."""
     now = datetime.now(UTC)
+    short = user.role == Role.admin and org_kind != OrgKind.personal
     ttl = (
         timedelta(hours=settings.admin_token_hours)
-        if user.role == Role.admin
+        if short
         else timedelta(days=settings.member_token_days)
     )
     payload = {

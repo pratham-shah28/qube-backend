@@ -4,7 +4,7 @@ from sqlmodel import select
 
 from app.models import Invite, LockSession, utcnow
 from app.sun import make_tap
-from tests.conftest import ADMIN_PASSWORD, new_uid
+from tests.conftest import ADMIN_PASSWORD, join_body, new_uid
 
 
 def test_zone_crud(world):
@@ -87,11 +87,11 @@ def test_invites_lifecycle(world):
     c = world.client
     inv = c.post("/admin/invites", json={"max_uses": 5, "expires_in_hours": 24}, headers=h).json()
     assert len(inv["code"]) == 10
-    assert c.post("/auth/join", json={"code": inv["code"]}).status_code == 200
+    assert c.post("/auth/join", json=join_body(inv["code"])).status_code == 200
     listed = c.get("/admin/invites", headers=h).json()
     assert listed[0]["use_count"] == 1
     assert c.delete(f"/admin/invites/{inv['code']}", headers=h).status_code == 204
-    assert c.post("/auth/join", json={"code": inv["code"]}).status_code == 400
+    assert c.post("/auth/join", json=join_body(inv["code"])).status_code == 400
 
 
 def test_deactivate_user_ends_session_and_revokes_token(world):

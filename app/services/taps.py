@@ -59,6 +59,8 @@ def _consume_counter(db: Session, tag: Tag, counter: int, now: datetime) -> bool
 def check_tap(
     db: Session, settings: Settings, user: User, tap: TapPayload, *, online: bool, now: datetime
 ) -> TapCheck:
+    if tap.is_plain:
+        return _check_plain_tap(db, settings, user, tap)
     try:
         sun = verify_tap(settings.master_key_bytes, tap.picc_data, tap.cmac)
     except SunError:
@@ -77,6 +79,24 @@ def check_tap(
         return TapCheck(sun=sun, tag=tag, reason="replayed_tap")
     if not _consume_counter(db, tag, sun.counter, now):
         return TapCheck(sun=sun, tag=tag, reason="replayed_tap")
+    return TapCheck(sun=sun, tag=tag)
+
+
+def _check_plain_tap(db: Session, settings: Settings, user: User, tap: TapPayload) -> TapCheck:
+    """TEMPORARY (NTAG215): identify the tag by UID only. No signature, no replay check."""
+    if not settings.allow_plain_tags:
+        return TapCheck(reason="plain_tags_disabled")
+    sun = SunTap(uid=tap.uid, counter=-1)
+    tag = db.get(Tag, tap.uid)
+    if tag is None:
+        return TapCheck(sun=sun, reason="unknown_tag")
+    if tag.org_id != user.org_id:
+        return TapCheck(reason="wrong_org")
+    zone = db.get(Zone, tag.zone_id)
+    if not tag.active or zone.archived:
+        return TapCheck(sun=sun, tag=tag, reason="inactive_tag")
+    tag.last_seen_at = utcnow()
+    db.add(tag)
     return TapCheck(sun=sun, tag=tag)
 
 
@@ -132,7 +152,7 @@ def process_online_tap(
         occurred_at=now,
         received_at=now,
         tag_uid=check.sun.uid if check.sun else None,
-        tag_counter=check.sun.counter if check.sun else None,
+        tag_counter=check.sun.counter if check.sun and check.sun.counter >= 0 else None,
     )
 
     if check.reason:
@@ -299,7 +319,7 @@ def _apply_sync_event(
         verification=verification,
         reject_reason=check.reason,
         tag_uid=check.sun.uid if check.sun else None,
-        tag_counter=check.sun.counter if check.sun else None,
+        tag_counter=check.sun.counter if check.sun and check.sun.counter >= 0 else None,
     )
 
     if ev.type == "start":
@@ -370,3 +390,87 @@ def process_sync(
         with db.begin_nested():
             results[i] = _apply_sync_event(db, settings, user, device_id, ev, now)
     return results
+
+
+# --- tag claim (individuals and org admins) ------------------------------------------------
+
+
+class ClaimError(Exception):
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+
+
+def claim_tag(
+    db: Session, settings: Settings, user: User, tap: TapPayload, role: TagRole, zone_id: int | None
+) -> tuple[Tag, bool]:
+    """Register the tapped tag to the caller's org. Returns (tag, created).
+
+    Ownership is by possession: whoever first taps a fresh Qube tag while signed in as an admin
+    owns it. The claim tap's counter is consumed so the same URL can't then start a session."""
+    if tap.is_plain:
+        if not settings.allow_plain_tags:
+            raise ClaimError(400, "plain_tags_disabled")
+        sun = SunTap(uid=tap.uid, counter=-1)
+    else:
+        try:
+            sun = verify_tap(settings.master_key_bytes, tap.picc_data, tap.cmac)
+        except SunError as e:
+            raise ClaimError(400, "invalid_signature") from e
+
+    now = utcnow()
+    existing = db.get(Tag, sun.uid)
+    if existing is not None:
+        if existing.org_id != user.org_id:
+            raise ClaimError(409, "tag_taken")
+        return existing, False
+
+    if zone_id is not None:
+        zone = db.get(Zone, zone_id)
+        if zone is None or zone.org_id != user.org_id or zone.archived:
+            raise ClaimError(404, "unknown_zone")
+    else:
+        zone = db.exec(
+            select(Zone)
+            .where(Zone.org_id == user.org_id, Zone.archived.is_(False))
+            .order_by(Zone.id)
+        ).first()
+        if zone is None:
+            raise ClaimError(400, "no_zone")
+
+    tag = Tag(uid=sun.uid, org_id=user.org_id, zone_id=zone.id, role=role)
+    db.add(tag)
+    db.flush()
+    if not tap.is_plain:
+        _consume_counter(db, tag, sun.counter, now)
+    return tag, True
+
+
+# --- emergency end -------------------------------------------------------------------------
+
+
+def process_emergency_end(db: Session, user: User, device_id: int, client_event_id: str) -> None:
+    """End the active session without a tag. Logged as emergency_button so admins see it.
+    Idempotent per client_event_id."""
+    if _find_event(db, user.id, client_event_id) is not None:
+        return
+    now = utcnow()
+    active = expire_if_due(db, active_session(db, user.id), now)
+    if active is not None:
+        end_session(active, now, EndReason.emergency_button)
+        db.add(active)
+    event = _new_event(
+        user,
+        device_id,
+        client_event_id,
+        source="online",
+        type="end",
+        occurred_at=now,
+        received_at=now,
+        end_reason=EndReason.emergency_button,
+        zone_id=active.zone_id if active else None,
+        action="unlock" if active else "ignored",
+        session_id=active.id if active else None,
+    )
+    db.add(event)
+    db.flush()

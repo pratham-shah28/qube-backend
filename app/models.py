@@ -7,7 +7,7 @@ parent) and admin queries always filter on the org_id from the caller's token.
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import Index, UniqueConstraint, text
+from sqlalchemy import JSON, Column, Index, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -39,6 +39,18 @@ class EndReason(StrEnum):
     zone_change = "zone_change"
 
 
+class OrgKind(StrEnum):
+    # An individual's account is an org of one: they are its admin, own its tags and choose
+    # their own apps on the device. A real organization's admin sets a lock policy for members.
+    personal = "personal"
+    organization = "organization"
+
+
+class PolicyMode(StrEnum):
+    all = "all"  # lock every app during focus (enforceable on iOS without per-device picking)
+    list = "list"  # lock the apps in LockPolicy.apps
+
+
 class Verification(StrEnum):
     verified = "verified"
     provisional = "provisional"
@@ -51,19 +63,23 @@ class Organization(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
     timezone: str = "UTC"  # IANA name, used for auto_unlock_time and "today"
+    kind: OrgKind = Field(
+        default=OrgKind.organization, sa_column_kwargs={"server_default": "organization"}
+    )
     created_at: datetime = Field(default_factory=utcnow)
 
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
     __table_args__ = (
-        # Admins sign in by email, so admin emails must be globally unique.
+        # Everyone signs in by email, so emails are globally unique (legacy invite-only
+        # members may have none).
         Index(
-            "ux_users_admin_email",
+            "ux_users_email",
             "email",
             unique=True,
-            sqlite_where=text("role = 'admin'"),
-            postgresql_where=text("role = 'admin'"),
+            sqlite_where=text("email IS NOT NULL"),
+            postgresql_where=text("email IS NOT NULL"),
         ),
     )
 
@@ -77,6 +93,20 @@ class User(SQLModel, table=True):
     # Bumped to invalidate every token issued to this user.
     token_version: int = 0
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class LockPolicy(SQLModel, table=True):
+    """Which apps an organization locks during focus. Only for OrgKind.organization; personal
+    accounts pick apps on the device. `apps` is a list of {"name", "android_package"}: Android
+    enforces the packages exactly, iPhone members pick the named apps in Apple's picker."""
+
+    __tablename__ = "lock_policies"
+
+    org_id: int = Field(foreign_key="organizations.id", primary_key=True)
+    mode: PolicyMode = PolicyMode.all
+    apps: list[dict] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    version: int = 1
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class Invite(SQLModel, table=True):

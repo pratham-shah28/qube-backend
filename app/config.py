@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     # so a stale sniffed URL can't be used live. Offline sync skips this check.
     online_counter_window: int = 50
 
+    # TEMPORARY, for NTAG215 stickers until NTAG 424 DNA tags are in use. When true, a tap may
+    # identify a tag by its chip UID alone ({"uid": ...}) instead of a signed SUN message.
+    # UIDs are not secret and plain taps can't be replay-checked, so anyone who copies a UID
+    # can start or end sessions. Keep false anywhere real users depend on it; set
+    # QUBE_ALLOW_PLAIN_TAGS=false to go back to 424 DNA only.
+    allow_plain_tags: bool = False
+
     # Per-IP limit on /auth/join and /auth/admin-login.
     auth_rate_limit_per_minute: int = 10
 

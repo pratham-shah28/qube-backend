@@ -73,6 +73,19 @@ def new_id() -> str:
     return uuid.uuid4().hex
 
 
+MEMBER_PASSWORD = "member password 1"
+
+
+def join_body(code: str, **extra) -> dict:
+    """A valid /auth/join body with a fresh email."""
+    return {
+        "code": code,
+        "email": f"m-{new_id()[:10]}@example.edu",
+        "password": MEMBER_PASSWORD,
+        **extra,
+    }
+
+
 _uid_seq = itertools.count(1)
 
 
